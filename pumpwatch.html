@@ -441,7 +441,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 // GOOGLE DRIVE API HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile';
 let accessToken = null;
 let folderId    = null;   // PumpWatch root folder ID in Drive
 let subFolders  = {};     // { pumps, inspections, photos, manuals }
@@ -461,8 +461,16 @@ function signIn() {
     callback: async (resp) => {
       if (resp.error) { console.error(resp); return; }
       accessToken = resp.access_token;
-      const profile = await gfetch('https://www.googleapis.com/oauth2/v3/userinfo');
-      document.getElementById('user-name').textContent = profile.email;
+
+      // Fetch profile — non-fatal if it fails
+      try {
+        const profile = await gfetch('https://www.googleapis.com/oauth2/v3/userinfo');
+        document.getElementById('user-name').textContent = profile.email || profile.name || 'Signed in';
+      } catch(e) {
+        console.warn('Could not fetch user profile:', e);
+        document.getElementById('user-name').textContent = 'Signed in';
+      }
+
       document.getElementById('auth-screen').style.display = 'none';
       document.getElementById('app').classList.add('visible');
       await initDrive();
