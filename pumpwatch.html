@@ -511,14 +511,16 @@ async function initDrive() {
   // List ALL children of the shared folder in one call
   // This works for shared folders where individual subfolders may not be
   // directly shared — we enumerate by parent ID instead of searching by name
+  // Build query with proper URL encoding — + signs cause silent failures
+  const q = encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
   const listed = await gfetch(
-    `https://www.googleapis.com/drive/v3/files` +
-    `?q='${folderId}'+in+parents+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false` +
-    `&fields=files(id,name)&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true`
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=20`
   );
 
+  console.log('[MaintenanceApp] Subfolder search result:', JSON.stringify(listed));
   const found = {};
   (listed.files || []).forEach(f => { found[f.name] = f.id; });
+  console.log('[MaintenanceApp] Found subfolders:', JSON.stringify(found));
 
   // Only create missing subfolders if we are the owner (have write access)
   // Non-owners will get an error creating folders — catch gracefully
