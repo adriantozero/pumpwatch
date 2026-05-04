@@ -20,7 +20,10 @@
   // │  PASTE YOUR GOOGLE CLIENT ID HERE                   │
   const GOOGLE_CLIENT_ID = '800074659668-trle1a5jlnfko9du0hdq3shi2bbovq70.apps.googleusercontent.com';
   // │  Optional: Anthropic API key for AI chat            │
-  const ANTHROPIC_KEY = ''; // leave empty to disable AI
+  const ANTHROPIC_KEY = ''; // leave empty to use Apps Script only
+  // Paste your Apps Script Web App URL here after deploying:
+  const APPS_SCRIPT_URL = ''; // e.g. https://script.google.com/macros/s/AKfy.../exec
+  const SHARED_FOLDER_ID = '1GBAiYTb2NsoYglI3fyy3LdZtYBALBaV1'; // shared PumpWatch folder — all team members use this
   // └─────────────────────────────────────────────────────┘
 </script>
 
@@ -278,7 +281,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
     <div class="auth-logo">MAINTENANCEAPP</div>
   </div>
   <div class="auth-title">Equipment Maintenance<br>Management System</div>
-  <div class="auth-sub">Sign in with your tozero Google account to access maintenance data stored in tozero`s Google Drive.</div>
+  <div class="auth-sub">Sign in with your tozero Google account to access maintenance data stored in Google Drive.</div>
   <button class="auth-btn" onclick="signIn()">
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -294,7 +297,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 <!-- ══ APP ══════════════════════════════════════════════════════════════════ -->
 <div id="app">
   <div class="topbar">
-    <div class="topbar-logo"><img src="https://adriantozero.github.io/pumpwatch/logo.png" alt="ToZero" style="height:40px;width:auto;vertical-align:middle;margin-right:10px;filter:brightness(0) invert(1)" onerror="this.style.display='none'">MAINTENANCEAPP</div>
+    <div class="topbar-logo"><img src="https://adriantozero.github.io/pumpwatch/logo.png" alt="ToZero" style="height:20px;width:auto;vertical-align:middle;margin-right:10px;filter:brightness(0) invert(1)" onerror="this.style.display='none'">MAINTENANCEAPP</div>
     <div class="topbar-nav">
       <button class="nav-btn active" onclick="showPage('dashboard')">Dashboard</button>
       <button class="nav-btn" onclick="showPage('inspection')">Inspection</button>
@@ -393,7 +396,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
             <button class="btn btn-primary" id="chat-send" onclick="sendChat()">Send</button>
           </div>
           <div id="no-ai-note" style="font-size:11px;color:var(--text3);margin-top:6px" class="hidden">
-            AI chat is disabled. Add your Anthropic API key at the top of this file to enable it.
+            AI chat is disabled. Set APPS_SCRIPT_URL (recommended) or ANTHROPIC_KEY at the top of this file.
           </div>
         </div>
       </div>
@@ -492,18 +495,20 @@ function setSyncing(msg, active = true) {
 // ── Drive folder setup ────────────────────────────────────────────────────
 async function initDrive() {
   setSyncing('Connecting to Drive…');
-  // Find or create PumpWatch root folder
-  let res = await gfetch(`https://www.googleapis.com/drive/v3/files?q=name='PumpWatch' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`);
-  if (res.files?.length) {
-    folderId = res.files[0].id;
-  } else {
-    const f = await gfetch('https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      body: JSON.stringify({ name: 'PumpWatch', mimeType: 'application/vnd.google-apps.folder' })
-    });
-    folderId = f.id;
+
+  // Use the shared folder ID directly — all team members read/write the same folder
+  folderId = SHARED_FOLDER_ID;
+
+  // Verify we can access it
+  try {
+    await gfetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name`);
+  } catch(e) {
+    setSyncing('Drive error — check folder sharing', false);
+    showToast('⚠ Cannot access shared folder. Ask Adrian to share it with your Google account.');
+    return;
   }
-  // Create subfolders
+
+  // Find or create subfolders inside the shared folder
   for (const name of ['pumps', 'inspections', 'photos', 'manuals']) {
     let sr = await gfetch(`https://www.googleapis.com/drive/v3/files?q=name='${name}' and '${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id)`);
     if (sr.files?.length) {
@@ -763,7 +768,73 @@ async function saveManual() {
   setSyncing('Drive connected', false);
   closeManualModal();
   renderDashboard();
-  showToast(`Manual uploaded ✓`);
+  showToast('Manual uploaded ✓ — indexing for AI search…');
+  // Trigger Apps Script to pre-cache the PDF text (non-blocking)
+  triggerIndex(pumpId);
+}
+
+// ── Extract ranges from manual via Apps Script ──────────────────────────────
+async function extractRangesFromManual() {
+  const pumpId   = document.getElementById('ep-id').value;
+  const pumpName = document.getElementById('ep-name').value;
+  const pump     = pumps.find(p => p.id === pumpId);
+  const statusEl = document.getElementById('extract-status');
+  const btn      = document.getElementById('extract-btn');
+
+  if (!APPS_SCRIPT_URL) {
+    showToast('Set APPS_SCRIPT_URL first to enable PDF extraction'); return;
+  }
+  if (!pump?.manualFileId) {
+    showToast('Upload a manual PDF for this pump first'); return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Reading PDF…';
+  statusEl.style.display = 'block';
+  statusEl.style.color   = 'var(--text3)';
+  statusEl.textContent   = '↻ Extracting ranges from ' + pump.manualName + '…';
+
+  try {
+    const resp = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'extract', pumpId, pumpName })
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    const r   = data.ranges;
+    const map = [
+      { key: 'flowRate',          i: 0 },
+      { key: 'dischargePressure', i: 1 },
+      { key: 'suctionPressure',   i: 2 },
+      { key: 'motorCurrent',      i: 3 },
+      { key: 'bearingTemp',       i: 4 },
+      { key: 'vibration',         i: 5 }
+    ];
+    map.forEach(({ key, i }) => {
+      const lo = document.getElementById('er-low-'  + i);
+      const hi = document.getElementById('er-high-' + i);
+      if (lo && r[key]) lo.value = r[key].low;
+      if (hi && r[key]) hi.value = r[key].high;
+    });
+    statusEl.style.color   = 'var(--accent)';
+    statusEl.textContent   = '✓ Ranges extracted — review and save';
+  } catch(e) {
+    statusEl.style.color   = 'var(--danger)';
+    statusEl.textContent   = '✗ ' + e.message;
+  }
+  btn.disabled    = false;
+  btn.textContent = 'Extract from PDF';
+}
+
+// ── Trigger re-index when manual uploaded ─────────────────────────────────
+async function triggerIndex(pumpId) {
+  if (!APPS_SCRIPT_URL) return;
+  try {
+    await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'index', pumpId })
+    });
+  } catch(e) { console.warn('Index trigger failed:', e.message); }
 }
 
 // ── Add Pump ──────────────────────────────────────────────────────────────
@@ -1091,66 +1162,90 @@ async function showReport(fileId) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function sendChat() {
-  if (!ANTHROPIC_KEY) { showToast('Add your Anthropic API key to enable AI chat'); return; }
+  const hasAppsScript = APPS_SCRIPT_URL && APPS_SCRIPT_URL !== '';
+  const hasDirectKey  = ANTHROPIC_KEY && ANTHROPIC_KEY !== '';
+
+  if (!hasAppsScript && !hasDirectKey) {
+    showToast('Set APPS_SCRIPT_URL or ANTHROPIC_KEY to enable AI chat');
+    return;
+  }
+
   const input = document.getElementById('chat-input');
-  const text = input.value.trim();
+  const text  = input.value.trim();
   if (!text) return;
   input.value = '';
   appendBubble('user', text);
   chatHistory.push({ role: 'user', content: text });
   const btn = document.getElementById('chat-send');
   btn.disabled = true;
-
   const typingId = appendTyping();
 
   const pumpCtx = document.getElementById('pump-ctx').value;
-  let manualContext = '';
-
-  // Try to load manual PDF text if pump has one and context is selected
-  if (pumpCtx !== 'all') {
-    const pump = pumps.find(p => p.id === pumpCtx);
-    if (pump?.manualFileId) {
-      try {
-        setSyncing('Reading manual…');
-        const r = await fetch(`https://www.googleapis.com/drive/v3/files/${pump.manualFileId}?alt=media`, {
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
-        const buf = await r.arrayBuffer();
-        // We can't parse PDFs in-browser easily, so we just tell the AI the manual exists
-        manualContext = `\n\nNote: Pump "${pump.name}" has a manual on file (${pump.manualName}). The user may be referring to specifications in that manual.`;
-        setSyncing('Drive connected', false);
-      } catch(e) {}
-    }
-  }
-
-  const system = `You are PumpWatch AI, a pump maintenance expert. Help maintenance technicians with:
-- Inspection procedures and checklists
-- Troubleshooting: low flow, leaks, overheating, vibration, noise
-- Interpreting measurement readings
-- Lubrication, bearing replacement, seal inspection
-- Safety (LOTO, PPE requirements)
-- Spare parts and torque specifications
-Use metric units. Be concise and practical.${manualContext}`;
+  const pump    = pumpCtx !== 'all' ? pumps.find(p => p.id === pumpCtx) : null;
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, system, messages: chatHistory })
-    });
-    const data = await resp.json();
-    const reply = data.content?.[0]?.text || 'Sorry, I could not get a response.';
+    let reply = '';
+
+    if (hasAppsScript) {
+      // ── Route through Apps Script — full PDF search ──────────────────────
+      setSyncing(pump?.manualName ? 'Reading manual…' : 'Thinking…');
+      const resp = await fetch(APPS_SCRIPT_URL, {
+        method:  'POST',
+        body: JSON.stringify({
+          action:   'search',
+          question: text,
+          pumpId:   pump?.id || 'all',
+          pumpName: pump?.name || 'all pumps',
+          history:  chatHistory.slice(-6)
+        })
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      reply = data.reply;
+      // Show manual indicator
+      if (data.hasManual) {
+        appendBubbleSource(`✓ Searched manual (${Math.round(data.manualLength/1000)}k chars)`);
+      }
+      setSyncing('Drive connected', false);
+
+    } else {
+      // ── Fallback: direct Anthropic API (no PDF search) ───────────────────
+      const manualNote = pump?.manualName
+        ? `\n\nNote: ${pump.name} has a manual on file (${pump.manualName}) but PDF search requires Apps Script to be configured.`
+        : '';
+      const system = `You are MaintenanceApp AI, a pump maintenance expert for ToZero. Help with inspection procedures, troubleshooting, measurements, lubrication, safety, and spare parts. Use metric units.${manualNote}`;
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, system, messages: chatHistory })
+      });
+      const data = await resp.json();
+      reply = data.content?.[0]?.text || 'Sorry, could not get a response.';
+    }
+
     removeTyping(typingId);
     appendBubble('ai', reply);
     chatHistory.push({ role: 'assistant', content: reply });
+
   } catch(e) {
     removeTyping(typingId);
-    appendBubble('ai', 'Connection error. Please check your API key and network.');
+    appendBubble('ai', 'Error: ' + e.message);
+    setSyncing('Drive connected', false);
   }
   btn.disabled = false;
 }
 
 function sendQuick(text) { document.getElementById('chat-input').value = text; sendChat(); }
+
+function appendBubbleSource(text) {
+  const msgs = document.getElementById('chat-messages');
+  const last = msgs.lastElementChild;
+  if (!last) return;
+  const src = document.createElement('div');
+  src.className = 'bubble-src';
+  src.textContent = text;
+  last.querySelector('.bubble')?.after(src);
+}
 
 function appendBubble(role, text) {
   const msgs = document.getElementById('chat-messages');
@@ -1216,9 +1311,13 @@ if (!ANTHROPIC_KEY) document.getElementById('no-ai-note')?.classList.remove('hid
     <div class="field"><label>Location</label><input id="ep-loc" placeholder="Pump house A"></div>
     <div class="field"><label>Maintenance interval (days)</label><input id="ep-interval" type="number"></div>
     <div class="modal-section">Measurement ranges</div>
-    <div style="display:grid;grid-template-columns:1fr 70px 70px;gap:6px 8px;font-size:11px;color:var(--text3);margin-bottom:4px;letter-spacing:0.05em;text-transform:uppercase">
-      <span>Parameter</span><span style="text-align:center">Min</span><span style="text-align:center">Max</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr 70px 70px;gap:6px 8px;font-size:11px;color:var(--text3);letter-spacing:0.05em;text-transform:uppercase;flex:1">
+        <span>Parameter</span><span style="text-align:center">Min</span><span style="text-align:center">Max</span>
+      </div>
+      <button class="btn btn-sm" id="extract-btn" onclick="extractRangesFromManual()" style="margin-left:12px;flex-shrink:0">Extract from PDF</button>
     </div>
+    <div id="extract-status" style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;display:none"></div>
     <div id="ep-ranges"></div>
     <div class="modal-btns" style="justify-content:space-between;margin-top:20px">
       <button class="btn btn-danger btn-sm" onclick="deletePump()">Delete pump</button>
