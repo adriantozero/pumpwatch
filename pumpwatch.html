@@ -499,7 +499,7 @@ async function initDrive() {
   // Use the shared folder ID directly — all team members read/write the same folder
   folderId = SHARED_FOLDER_ID;
 
-  // Verify we can access it
+  // Verify we can access the shared root folder
   try {
     await gfetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name`);
   } catch(e) {
@@ -508,19 +508,43 @@ async function initDrive() {
     return;
   }
 
-  // Find or create subfolders inside the shared folder
+  // List ALL children of the shared folder in one call
+  // This works for shared folders where individual subfolders may not be
+  // directly shared — we enumerate by parent ID instead of searching by name
+  const listed = await gfetch(
+    `https://www.googleapis.com/drive/v3/files` +
+    `?q='${folderId}'+in+parents+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false` +
+    `&fields=files(id,name)&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true`
+  );
+
+  const found = {};
+  (listed.files || []).forEach(f => { found[f.name] = f.id; });
+
+  // Only create missing subfolders if we are the owner (have write access)
+  // Non-owners will get an error creating folders — catch gracefully
   for (const name of ['pumps', 'inspections', 'photos', 'manuals']) {
-    let sr = await gfetch(`https://www.googleapis.com/drive/v3/files?q=name='${name}' and '${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id)`);
-    if (sr.files?.length) {
-      subFolders[name] = sr.files[0].id;
+    if (found[name]) {
+      subFolders[name] = found[name];
     } else {
-      const sf = await gfetch('https://www.googleapis.com/drive/v3/files', {
-        method: 'POST',
-        body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [folderId] })
-      });
-      subFolders[name] = sf.id;
+      // Try to create it (works for owner), fail gracefully for read-only members
+      try {
+        const sf = await gfetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [folderId] })
+        });
+        if (sf.id) {
+          subFolders[name] = sf.id;
+        } else {
+          throw new Error('no id returned');
+        }
+      } catch(e) {
+        setSyncing('Drive error', false);
+        showToast(`⚠ Subfolder "${name}" not found. Ask Adrian to share all subfolders.`);
+        return;
+      }
     }
   }
+
   setSyncing('Drive connected', false);
 }
 
