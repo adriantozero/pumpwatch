@@ -248,6 +248,21 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 @keyframes toastin { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 .setup-banner { background: #fffbeb; border: 1px solid #fde68a; border-radius: var(--radius); padding: 14px 18px; margin-bottom: 20px; font-size: 13px; color: #92400e; line-height: 1.6; }
 .setup-banner strong { font-weight: 600; }
+.btn-danger { background: transparent; color: var(--danger); border-color: rgba(192,57,43,0.3); }
+.btn-danger:hover { background: #fee2e2; border-color: var(--danger); }
+.action-btns { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+.manual-badge { font-size: 11px; padding: 2px 8px; border-radius: 3px; background: #d1fae5; color: #065f46; font-weight: 500; white-space: nowrap; }
+.modal-section { font-size: 11px; font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text3); margin: 16px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+
+.btn-danger { background: transparent; color: var(--danger); border-color: rgba(192,57,43,0.3); }
+.btn-danger:hover { background: #fee2e2; border-color: var(--danger); }
+.action-btns { display: flex; gap: 6px; justify-content: flex-end; }
+.manual-badge { font-size: 11px; padding: 2px 8px; border-radius: 3px; background: #d1fae5; color: #065f46; font-weight: 500; }
+.modal-section { font-size: 11px; font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text3); margin: 16px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+.range-row { display: grid; grid-template-columns: 1fr 70px 70px; gap: 6px 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.range-row:last-child { border-bottom: none; }
+.range-input { width: 100%; padding: 4px 7px; border: 1px solid var(--border2); border-radius: 4px; font-family: var(--mono); font-size: 12px; background: var(--bg); color: var(--text); text-align: center; outline: none; }
+.range-input:focus { border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -608,17 +623,140 @@ function renderDashboard() {
     const badge = st === 'ok' ? '<span class="badge badge-ok">OK</span>' : st === 'warn' ? '<span class="badge badge-warn">DUE SOON</span>' : '<span class="badge badge-due">OVERDUE</span>';
     const days = p.nextCheck ? Math.ceil((new Date(p.nextCheck) - new Date()) / 86400000) : null;
     const nextLabel = days === null ? '—' : days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'Today' : `${formatDate(p.nextCheck)}`;
+    const manualBadge = p.manualName ? `<span class="manual-badge" title="${p.manualName}">PDF ✓</span>` : '';
     return `<tr>
       <td><span class="status-dot ${dot}"></span>${badge}</td>
-      <td><strong>${p.name}</strong></td>
-      <td style="color:var(--text2)">${p.type || '—'}</td>
+      <td><strong>${p.name}</strong><br><span style="font-size:11px;color:var(--text3)">${p.location || ''}</span></td>
+      <td style="color:var(--text2)">${p.type || '—'}<br>${manualBadge}</td>
       <td style="font-family:var(--mono);font-size:12px">${nextLabel}</td>
       <td style="color:var(--text2);font-size:12px">${formatDate(p.lastChecked)}</td>
-      <td style="text-align:right">
-        <button class="btn btn-sm btn-primary" onclick="startInspection('${p.id}')">Inspect</button>
+      <td>
+        <div class="action-btns">
+          <button class="btn btn-sm btn-primary" onclick="startInspection('${p.id}')">Inspect</button>
+          <button class="btn btn-sm" onclick="showEditPump('${p.id}')">Edit</button>
+          <button class="btn btn-sm" onclick="showManualModal('${p.id}')" title="${p.manualName ? 'Replace manual: '+p.manualName : 'Upload manual'}">${p.manualName ? '📄 Manual' : '+ Manual'}</button>
+        </div>
       </td>
     </tr>`;
   }).join('');
+}
+
+
+// Default measurement ranges — overridden per pump if customised
+const DEFAULT_RANGES = [
+  { label: 'Flow rate',          unit: 'm³/h', low: 45,  high: 52  },
+  { label: 'Discharge pressure', unit: 'bar',   low: 4.5, high: 5.2 },
+  { label: 'Suction pressure',   unit: 'bar',   low: 0.5, high: 1.5 },
+  { label: 'Motor current L1',   unit: 'A',     low: 16,  high: 20  },
+  { label: 'Bearing temp (DE)',  unit: '°C',    low: 20,  high: 75  },
+  { label: 'Vibration overall',  unit: 'mm/s',  low: 0,   high: 4.5 }
+];
+
+function getPumpRanges(pump) {
+  return DEFAULT_RANGES.map((r, i) => ({
+    ...r,
+    low:  pump.ranges?.[i]?.low  ?? r.low,
+    high: pump.ranges?.[i]?.high ?? r.high
+  }));
+}
+
+// ── Edit pump ─────────────────────────────────────────────────────────────
+function showEditPump(pumpId) {
+  const pump = pumps.find(p => p.id === pumpId);
+  if (!pump) return;
+  document.getElementById('ep-id').value       = pump.id;
+  document.getElementById('ep-name').value     = pump.name;
+  document.getElementById('ep-type').value     = pump.type || '';
+  document.getElementById('ep-loc').value      = pump.location || '';
+  document.getElementById('ep-interval').value = pump.intervalDays;
+
+  // Render range inputs
+  const ranges = getPumpRanges(pump);
+  document.getElementById('ep-ranges').innerHTML = ranges.map((r, i) => `
+    <div class="range-row">
+      <span>${r.label} <span style="color:var(--text3)">(${r.unit})</span></span>
+      <input class="range-input" type="number" step="any" id="er-low-${i}" value="${r.low}">
+      <input class="range-input" type="number" step="any" id="er-high-${i}" value="${r.high}">
+    </div>`).join('');
+
+  document.getElementById('edit-pump-modal').classList.remove('hidden');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-pump-modal').classList.add('hidden');
+}
+
+async function saveEditedPump() {
+  const id = document.getElementById('ep-id').value;
+  const idx = pumps.findIndex(p => p.id === id);
+  if (idx < 0) return;
+
+  pumps[idx].name        = document.getElementById('ep-name').value.trim();
+  pumps[idx].type        = document.getElementById('ep-type').value.trim();
+  pumps[idx].location    = document.getElementById('ep-loc').value.trim();
+  pumps[idx].intervalDays = parseInt(document.getElementById('ep-interval').value) || 30;
+
+  // Save custom ranges
+  pumps[idx].ranges = DEFAULT_RANGES.map((_, i) => ({
+    low:  parseFloat(document.getElementById(`er-low-${i}`).value),
+    high: parseFloat(document.getElementById(`er-high-${i}`).value)
+  }));
+
+  await savePumps();
+  closeEditModal();
+  renderDashboard();
+  updatePumpCtxSelect();
+  showToast('Pump updated ✓');
+}
+
+async function deletePump() {
+  const id = document.getElementById('ep-id').value;
+  const pump = pumps.find(p => p.id === id);
+  if (!confirm(`Delete "${pump?.name}"? Inspection history is kept in Drive.`)) return;
+  pumps = pumps.filter(p => p.id !== id);
+  await savePumps();
+  closeEditModal();
+  renderDashboard();
+  updatePumpCtxSelect();
+  showToast('Pump deleted');
+}
+
+// ── Upload manual to existing pump ────────────────────────────────────────
+function showManualModal(pumpId) {
+  const pump = pumps.find(p => p.id === pumpId);
+  if (!pump) return;
+  document.getElementById('mm-pump-id').value = pumpId;
+  document.getElementById('manual-modal-title').textContent = `Manual for ${pump.name}`;
+  document.getElementById('mm-current').innerHTML = pump.manualName
+    ? `Current manual: <span class="manual-badge">PDF ✓</span> ${pump.manualName} <a href="https://drive.google.com/file/d/${pump.manualFileId}/view" target="_blank" style="font-size:11px;color:var(--accent2);margin-left:4px">Open in Drive ↗</a>`
+    : 'No manual uploaded yet.';
+  document.getElementById('mm-file').value = '';
+  document.getElementById('manual-modal').classList.remove('hidden');
+}
+
+function closeManualModal() {
+  document.getElementById('manual-modal').classList.add('hidden');
+}
+
+async function saveManual() {
+  const pumpId = document.getElementById('mm-pump-id').value;
+  const file   = document.getElementById('mm-file').files[0];
+  if (!file) { showToast('Select a PDF file first'); return; }
+
+  setSyncing('Uploading manual…');
+  const fname = `${pumpId}_${file.name}`;
+  const uploaded = await uploadFileToDrive(subFolders.manuals, file, fname);
+
+  const idx = pumps.findIndex(p => p.id === pumpId);
+  if (idx >= 0) {
+    pumps[idx].manualFileId = uploaded.id;
+    pumps[idx].manualName   = file.name;
+  }
+  await savePumps();
+  setSyncing('Drive connected', false);
+  closeManualModal();
+  renderDashboard();
+  showToast(`Manual uploaded ✓`);
 }
 
 // ── Add Pump ──────────────────────────────────────────────────────────────
@@ -678,14 +816,10 @@ const INSPECTION_STEPS = [
     { label: 'Motor cooling fins free of debris', hint: 'Blocked fins cause overheating' },
     { label: 'Cable entry and conduit intact', hint: 'No exposed conductors' }
   ]},
-  { key: 'measurements', title: 'Measurements', type: 'measurements', items: [
-    { label: 'Flow rate',          unit: 'm³/h', low: 45, high: 52 },
-    { label: 'Discharge pressure', unit: 'bar',  low: 4.5, high: 5.2 },
-    { label: 'Suction pressure',   unit: 'bar',  low: 0.5, high: 1.5 },
-    { label: 'Motor current L1',   unit: 'A',    low: 16, high: 20 },
-    { label: 'Bearing temp (DE)',  unit: '°C',   low: 20, high: 75 },
-    { label: 'Vibration overall',  unit: 'mm/s', low: 0, high: 4.5 }
-  ]},
+  { key: 'measurements', title: 'Measurements', type: 'measurements',
+    // items are resolved dynamically from pump.ranges in renderInspectionStep()
+    items: DEFAULT_RANGES
+  },
   { key: 'lubrication', title: 'Lubrication', type: 'checklist', items: [
     { label: 'Oil level in sight glass OK', hint: 'Should be at mid-point' },
     { label: 'Oil colour clear — not milky', hint: 'Milky = water ingress, replace immediately' },
@@ -735,7 +869,9 @@ function renderInspectionStep() {
       </div>`;
     }).join('');
   } else if (s.type === 'measurements') {
-    body += s.items.map((item, i) => {
+    const activePump = pumps.find(p => p.id === currentInspection.pumpId);
+    const resolvedItems = getPumpRanges(activePump || {});
+    body += resolvedItems.map((item, i) => {
       const key = `meas_${i}`;
       const val = currentInspection.measurements[key] || '';
       const tag = val !== '' ? getTag(parseFloat(val), item.low, item.high) : '';
@@ -926,7 +1062,7 @@ async function showReport(fileId) {
   const checks = Object.values(rec.checks || {});
   const passed = checks.filter(Boolean).length;
   const measHtml = Object.entries(rec.measurements || {}).map(([k,v]) =>
-    `<div class="check-row"><div class="check-lbl">${INSPECTION_STEPS[2].items[parseInt(k.split('_')[1])]?.label || k}</div><div style="font-family:var(--mono);font-size:13px">${v} ${INSPECTION_STEPS[2].items[parseInt(k.split('_')[1])]?.unit || ''}</div></div>`
+    `<div class="check-row"><div class="check-lbl">${DEFAULT_RANGES[parseInt(k.split('_')[1])]?.label || k}</div><div style="font-family:var(--mono);font-size:13px">${v} ${DEFAULT_RANGES[parseInt(k.split('_')[1])]?.unit || ''}</div></div>`
   ).join('');
   el.innerHTML = `
     <div class="card" style="margin-top:16px">
@@ -1062,5 +1198,47 @@ function showToast(msg) {
 // Show/hide AI note
 if (!ANTHROPIC_KEY) document.getElementById('no-ai-note')?.classList.remove('hidden');
 </script>
+
+<!-- ══ EDIT PUMP MODAL ══ -->
+<div class="modal-overlay hidden" id="edit-pump-modal">
+  <div class="modal" style="width:480px">
+    <h3>Edit pump</h3>
+    <input type="hidden" id="ep-id">
+    <div class="field"><label>Name / ID</label><input id="ep-name" placeholder="P-01 · Main Supply"></div>
+    <div class="field"><label>Type / Model</label><input id="ep-type" placeholder="KSB Etanorm Centrifugal"></div>
+    <div class="field"><label>Location</label><input id="ep-loc" placeholder="Pump house A"></div>
+    <div class="field"><label>Maintenance interval (days)</label><input id="ep-interval" type="number"></div>
+    <div class="modal-section">Measurement ranges</div>
+    <div style="display:grid;grid-template-columns:1fr 70px 70px;gap:6px 8px;font-size:11px;color:var(--text3);margin-bottom:4px;letter-spacing:0.05em;text-transform:uppercase">
+      <span>Parameter</span><span style="text-align:center">Min</span><span style="text-align:center">Max</span>
+    </div>
+    <div id="ep-ranges"></div>
+    <div class="modal-btns" style="justify-content:space-between;margin-top:20px">
+      <button class="btn btn-danger btn-sm" onclick="deletePump()">Delete pump</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeEditModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEditedPump()">Save changes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ UPLOAD MANUAL MODAL ══ -->
+<div class="modal-overlay hidden" id="manual-modal">
+  <div class="modal">
+    <h3 id="manual-modal-title">Upload manual PDF</h3>
+    <input type="hidden" id="mm-pump-id">
+    <div id="mm-current" style="margin-bottom:14px;font-size:13px;color:var(--text2)"></div>
+    <div class="field">
+      <label>Select PDF file</label>
+      <input type="file" id="mm-file" accept=".pdf">
+    </div>
+    <div style="font-size:12px;color:var(--text3);margin-top:-6px;line-height:1.6">Saved to PumpWatch/manuals/ in your Drive. Replaces any existing manual for this pump.</div>
+    <div class="modal-btns">
+      <button class="btn" onclick="closeManualModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveManual()">Upload to Drive</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
